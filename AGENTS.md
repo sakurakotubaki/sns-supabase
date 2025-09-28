@@ -1,28 +1,27 @@
-# Next.js SNS App
-This is SNS App.
-Using Supabase with Next.js + Tailwind CSS + Supabase.
+# Repository Guidelines
 
-Local setup
+## SNSアプリの画面設計・画面遷移
+プロフィール作成はSignUpした後で良い
+- SignIn
+- SignUp
+- SignOut
+- TimeLine
+- Profile
 
-- Set environment variables in `.env`:
-  - `NEXT_PUBLIC_SUPABASE_URL=...`
-  - `NEXT_PUBLIC_SUPABASE_ANON_KEY=...`
-- (Optional but recommended) `NEXT_PUBLIC_SITE_URL=https://your-app.example.com` for magic links
-- Install deps: `npm install`
-- Dev: `npm run dev`
+## 技術構成
+- Next.js
+- AppRouter
+- Supabase
+- 認証方法はマジックリング
 
-Apply DB schema & policies
+## 初期状態の環境
+Supabaseの環境は設定済み
+URL & anon keyはこの環境変数に設定予定
 
-- Open Supabase Dashboard → SQL Editor.
-- Copy & run: `supabase/sql/001_init.sql`.
-- Sign out/in once so `profiles` is auto-created by the trigger.
-- If you prefer manual inserts to `profiles`, enable the commented `profiles_insert_own` policy and tell us to switch code to upsert.
+NEXT_PUBLIC_SUPABASE_URL=<SUBSTITUTE_SUPABASE_URL>
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<SUBSTITUTE_SUPABASE_PUBLISHABLE_KEY>
 
-Auth and middleware
-
-- SSR-grade protection via `@supabase/ssr`: `middleware.ts` checks `supabase.auth.getSession()` on the server and redirects unauthenticated users to `/login`.
-- Magic Link sign-in: submit email on `/login`. Email contains a link to `/auth/callback`, which exchanges the code for a session and redirects back.
-- Set `NEXT_PUBLIC_SITE_URL` so Supabase knows where to send the magic link.
+テーブルは作成済みです。
 
 ```sql
 -- 0) 拡張（UUID生成・タイムスタンプ）
