@@ -1,35 +1,8 @@
-# Next.js SNS App
-This is SNS App.
-Using Supabase with Next.js + Tailwind CSS + Supabase.
-
-Local setup
-
-- Set environment variables in `.env`:
-  - `NEXT_PUBLIC_SUPABASE_URL=...`
-  - `NEXT_PUBLIC_SUPABASE_ANON_KEY=...`
-- (Optional but recommended) `NEXT_PUBLIC_SITE_URL=https://your-app.example.com` for magic links
-- Install deps: `npm install`
-- Dev: `npm run dev`
-
-Apply DB schema & policies
-
-- Open Supabase Dashboard → SQL Editor.
-- Copy & run: `supabase/sql/001_init.sql`.
-- Sign out/in once so `profiles` is auto-created by the trigger.
-- If you prefer manual inserts to `profiles`, enable the commented `profiles_insert_own` policy and tell us to switch code to upsert.
-
-Auth and middleware
-
-- SSR-grade protection via `@supabase/ssr`: `middleware.ts` checks `supabase.auth.getSession()` on the server and redirects unauthenticated users to `/login`.
-- Magic Link sign-in: submit email on `/login`. Email contains a link to `/auth/callback`, which exchanges the code for a session and redirects back.
-- Set `NEXT_PUBLIC_SITE_URL` so Supabase knows where to send the magic link.
-
-```sql
--- 0) 拡張（UUID生成・タイムスタンプ）
+-- 0) Extensions
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 
--- 1) プロフィール：auth.users と 1:1
+-- 1) profiles
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   username text unique check (char_length(username) between 3 and 32),
@@ -43,7 +16,6 @@ create table if not exists public.profiles (
 
 create index if not exists idx_profiles_username on public.profiles (username);
 
--- 更新トリガー
 create or replace function public.set_updated_at()
 returns trigger language plpgsql as $$
 begin
@@ -56,12 +28,13 @@ create trigger trg_profiles_updated
 before update on public.profiles
 for each row execute function public.set_updated_at();
 
--- auth.users に新規ユーザーが作成されたら profiles を自動生成
+-- auto create profile on new auth.users
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
   insert into public.profiles (id, display_name)
-  values (new.id, coalesce(new.raw_user_meta_data->>'name', ''));
+  values (new.id, coalesce(new.raw_user_meta_data->>'name', ''))
+  on conflict (id) do nothing;
   return new;
 end; $$;
 
@@ -70,13 +43,12 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
-
--- 2) 投稿テーブル
+-- 2) posts
 create table if not exists public.posts (
   id uuid primary key default gen_random_uuid(),
   author_id uuid not null references public.profiles(id) on delete cascade,
   body text not null check (char_length(body) between 1 and 2000),
-  media_url text, -- 画像等（必要なら Storage を別途設定）
+  media_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -89,9 +61,7 @@ create trigger trg_posts_updated
 before update on public.posts
 for each row execute function public.set_updated_at();
 
-
--- 3) フォロー（中間テーブル）
--- follower_id が following_id をフォローする
+-- 3) follows
 create table if not exists public.follows (
   follower_id uuid not null references public.profiles(id) on delete cascade,
   following_id uuid not null references public.profiles(id) on delete cascade,
@@ -103,56 +73,58 @@ create table if not exists public.follows (
 create index if not exists idx_follows_following on public.follows (following_id);
 create index if not exists idx_follows_follower on public.follows (follower_id);
 
-
--- 4) RLS（行レベルセキュリティ）
+-- 4) RLS
 alter table public.profiles enable row level security;
 alter table public.posts    enable row level security;
 alter table public.follows  enable row level security;
 
--- profiles: 自分のプロフィールは自分のみ更新。全員の閲覧は可（必要に応じて制限）。
-create policy "profiles_select_all"
+-- profiles policies
+create policy if not exists profiles_select_all
   on public.profiles for select
   using (true);
 
-create policy "profiles_update_own"
+create policy if not exists profiles_update_own
   on public.profiles for update
   using (auth.uid() = id)
   with check (auth.uid() = id);
 
--- posts: 全件閲覧可。作成/更新/削除は本人のみ。
-create policy "posts_select_all"
+-- Optional: allow inserts when creating profile manually
+-- create policy if not exists profiles_insert_own
+--   on public.profiles for insert
+--   with check (auth.uid() = id);
+
+-- posts policies
+create policy if not exists posts_select_all
   on public.posts for select
   using (true);
 
-create policy "posts_insert_own"
+create policy if not exists posts_insert_own
   on public.posts for insert
   with check (auth.uid() = author_id);
 
-create policy "posts_update_own"
+create policy if not exists posts_update_own
   on public.posts for update
   using (auth.uid() = author_id)
   with check (auth.uid() = author_id);
 
-create policy "posts_delete_own"
+create policy if not exists posts_delete_own
   on public.posts for delete
   using (auth.uid() = author_id);
 
--- follows: 自分→他人 を作成/削除できるのは自分だけ。閲覧は全員可（必要に応じて絞る）。
-create policy "follows_select_all"
+-- follows policies
+create policy if not exists follows_select_all
   on public.follows for select
   using (true);
 
-create policy "follows_insert_self_only"
+create policy if not exists follows_insert_self_only
   on public.follows for insert
   with check (auth.uid() = follower_id);
 
-create policy "follows_delete_self_only"
+create policy if not exists follows_delete_self_only
   on public.follows for delete
   using (auth.uid() = follower_id);
 
-
--- 5) ビュー（followers / following をわかりやすく）
--- ユーザー毎のフォロワー一覧
+-- 5) Views
 create or replace view public.user_followers as
 select
   p.id as user_id,
@@ -164,7 +136,6 @@ from public.follows f
 join public.profiles p on p.id = f.following_id
 join public.profiles pf on pf.id = f.follower_id;
 
--- ユーザー毎のフォロー一覧
 create or replace view public.user_following as
 select
   p.id as user_id,
@@ -176,7 +147,6 @@ from public.follows f
 join public.profiles p on p.id = f.follower_id
 join public.profiles pt on pt.id = f.following_id;
 
--- （任意）便利ビュー：タイムライン＝自分と自分がフォローしている人の投稿
 create or replace view public.timeline as
 select
   posts.*
@@ -185,4 +155,4 @@ where posts.author_id = auth.uid()
    or posts.author_id in (
         select following_id from public.follows where follower_id = auth.uid()
       );
-```
+
